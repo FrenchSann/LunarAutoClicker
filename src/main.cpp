@@ -287,7 +287,7 @@ bool App::CreateDeviceIndependent() {
 
 ComPtr<IDWriteTextFormat> App::MakeFormat(float size, DWRITE_FONT_WEIGHT weight, DWRITE_TEXT_ALIGNMENT align) {
     ComPtr<IDWriteTextFormat> fmt;
-    if (FAILED(dwrite_->CreateTextFormat(L"Segoe UI Variable Display", nullptr, weight, DWRITE_FONT_STYLE_NORMAL,
+    if (FAILED(dwrite_->CreateTextFormat(L"Segoe UI", nullptr, weight, DWRITE_FONT_STYLE_NORMAL,
                                          DWRITE_FONT_STRETCH_NORMAL, size, L"fr-fr", fmt.GetAddressOf())))
         return nullptr;
     fmt->SetTextAlignment(align);
@@ -904,8 +904,44 @@ void ParseArgs() {
 
 }  // namespace
 
+// Active la conscience DPI sans dependance de chargement : les API recentes
+// n'existent pas sur les anciens Windows, un import statique empecherait alors
+// l'exe de demarrer. On resout donc la meilleure API disponible a l'execution.
+void EnableDpiAwareness() {
+    HMODULE user32 = GetModuleHandleW(L"user32.dll");
+    if (user32) {
+        using SetCtxFn = BOOL(WINAPI*)(DPI_AWARENESS_CONTEXT);
+        if (auto fn = reinterpret_cast<SetCtxFn>(GetProcAddress(user32, "SetProcessDpiAwarenessContext"))) {
+            if (fn(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2)) return;
+        }
+    }
+    HMODULE shcore = LoadLibraryW(L"shcore.dll");
+    if (shcore) {
+        using SetAwarenessFn = HRESULT(WINAPI*)(int);
+        if (auto fn = reinterpret_cast<SetAwarenessFn>(GetProcAddress(shcore, "SetProcessDpiAwareness"))) {
+            if (SUCCEEDED(fn(2 /* PROCESS_PER_MONITOR_DPI_AWARE */))) {
+                FreeLibrary(shcore);
+                return;
+            }
+        }
+        FreeLibrary(shcore);
+    }
+    SetProcessDPIAware();  // repli universel (Vista+)
+}
+
 int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int) {
-    SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
+    // Instance unique : deux copies doubleraient hooks et clics. Si une fenetre
+    // existe deja, on la met au premier plan et on quitte.
+    HANDLE instanceMutex = CreateMutexW(nullptr, TRUE, L"LunarAutoClicker_SingleInstance");
+    if (instanceMutex && GetLastError() == ERROR_ALREADY_EXISTS) {
+        if (HWND existing = FindWindowW(L"LunarAutoClickerWnd", nullptr)) {
+            ShowWindow(existing, SW_RESTORE);
+            SetForegroundWindow(existing);
+        }
+        return 0;
+    }
+
+    EnableDpiAwareness();
     CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
     // Resolution du timer a 1 ms pour des intervalles de clic precis.
     timeBeginPeriod(1);
@@ -934,5 +970,9 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int) {
     clicker::Stop();
     timeEndPeriod(1);
     CoUninitialize();
+    if (instanceMutex) {
+        ReleaseMutex(instanceMutex);
+        CloseHandle(instanceMutex);
+    }
     return 0;
 }

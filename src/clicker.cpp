@@ -18,6 +18,7 @@ std::atomic<bool> g_physicalLeftDown{false};
 std::atomic<bool> g_enabled{true};
 std::atomic<bool> g_running{false};
 std::atomic<bool> g_targetFocused{false};
+std::atomic<bool> g_injectedDown{false};  // un LEFTDOWN synthetique est-il actif ?
 std::atomic<int> g_cps{12};
 std::atomic<uint64_t> g_clicks{0};
 
@@ -107,6 +108,8 @@ void SendLeft(DWORD flag) {
     input.type = INPUT_MOUSE;
     input.mi.dwFlags = flag;
     SendInput(1, &input, sizeof(INPUT));
+    if (flag == MOUSEEVENTF_LEFTDOWN) g_injectedDown = true;
+    else if (flag == MOUSEEVENTF_LEFTUP) g_injectedDown = false;
 }
 
 // Le hook bas niveau a besoin d'une boucle de messages sur le thread qui l'installe.
@@ -189,6 +192,11 @@ void Stop() {
     PostThreadMessageW(g_hookThreadId, WM_QUIT, 0, 0);
     if (g_clickThread.joinable()) g_clickThread.join();
     if (g_hookThread.joinable()) g_hookThread.join();
+
+    // Garde-fou : si un LEFTDOWN synthetique est encore actif alors que
+    // l'utilisateur ne maintient plus le bouton, on normalise avec un LEFTUP
+    // pour ne jamais laisser le bouton "colle" enfonce apres l'arret.
+    if (g_injectedDown && !g_physicalLeftDown) SendLeft(MOUSEEVENTF_LEFTUP);
 }
 
 void SetCps(int cps) { g_cps = std::clamp(cps, kMinCps, kMaxCps); }
