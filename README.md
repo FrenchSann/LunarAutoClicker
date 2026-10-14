@@ -1,4 +1,4 @@
-# LunarAutoClicker
+﻿# LunarAutoClicker
 
 Autoclicker externe en C++ (API Win32) qui simule des clics gauches uniquement quand :
 
@@ -13,14 +13,25 @@ cmake -S . -B build
 cmake --build build --config Release
 ```
 
+## Interface
+
+Fenêtre Direct2D sans bordure, sans dépendance externe :
+
+- **Cadran CPS** : 30 segments (1 segment = 1 CPS), réglables en glissant, à la molette ou avec ← →
+- **Anneau intérieur** : CPS réellement mesuré
+- **Oscilloscope** : chaque clic simulé apparaît en temps réel
+- **Préréglages** : 8 / 10 / 12 / 14 / 16 / 20
+- **Indicateurs** : Lunar détecté, clic maintenu (HOLD)
+- Réglages sauvegardés dans `%APPDATA%\LunarAutoClicker\settings.ini`
+
 ## Utilisation
 
 ```
-LunarAutoClicker.exe [--cps N (1-30)] [--process nom.exe]...
+LunarAutoClicker.exe [--process nom.exe]...
 ```
 
-- **F8** : activer / désactiver
-- **F10** : quitter
+- **F8** (global) ou **Espace** : activer / désactiver
+- **F10** (global) ou **Échap** : quitter
 
 Si Lunar tourne en administrateur, lance aussi l'autoclicker en administrateur.
 
