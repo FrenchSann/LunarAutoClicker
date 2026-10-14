@@ -20,11 +20,16 @@ int GetCps();
 void SetEnabled(bool enabled);
 bool IsEnabled();
 
+// Bouton simule : false = gauche (defaut), true = droit.
+void SetRightButton(bool right);
+bool UsesRightButton();
+
 // Remplace la liste des exe cibles (noms de fichier, insensibles a la casse).
 void SetTargetExes(const std::vector<std::wstring>& exes);
 
 bool IsHolding();        // bouton gauche maintenu physiquement
 bool IsTargetFocused();  // Lunar Client au premier plan
 uint64_t ClickCount();   // nombre total de clics simules
+void ResetClickCount();  // remet le compteur en memoire a zero
 
 }  // namespace clicker

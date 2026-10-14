@@ -4,9 +4,9 @@ project(LunarAutoClicker CXX)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
-add_executable(LunarAutoClicker WIN32 src/main.cpp src/clicker.cpp)
+add_executable(LunarAutoClicker WIN32 src/main.cpp src/clicker.cpp src/cleanup.cpp)
 target_compile_definitions(LunarAutoClicker PRIVATE UNICODE _UNICODE)
-target_link_libraries(LunarAutoClicker PRIVATE d2d1 dwrite dwmapi winmm shell32 ole32)
+target_link_libraries(LunarAutoClicker PRIVATE d2d1 dwrite dwmapi winmm shell32 ole32 bcrypt)
 
 if(MSVC)
     target_compile_options(LunarAutoClicker PRIVATE /W4 /utf-8)

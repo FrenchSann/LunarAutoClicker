@@ -15,12 +15,17 @@ namespace clicker {
 namespace {
 
 std::atomic<bool> g_physicalLeftDown{false};
+std::atomic<bool> g_physicalRightDown{false};
 std::atomic<bool> g_enabled{true};
 std::atomic<bool> g_running{false};
 std::atomic<bool> g_targetFocused{false};
-std::atomic<bool> g_injectedDown{false};  // un LEFTDOWN synthetique est-il actif ?
+std::atomic<bool> g_injectedDown{false};  // un *DOWN synthetique est-il actif ?
+std::atomic<bool> g_rightButton{false};    // false = clic gauche, true = clic droit
 std::atomic<int> g_cps{12};
 std::atomic<uint64_t> g_clicks{0};
+
+// Etat physique du bouton actuellement selectionne.
+bool PhysicalHeld() { return g_rightButton ? g_physicalRightDown.load() : g_physicalLeftDown.load(); }
 
 std::mutex g_exesMutex;
 std::vector<std::wstring> g_targetExes = {L"lunarclient.exe", L"lunar client.exe"};
@@ -41,8 +46,13 @@ LRESULT CALLBACK MouseHookProc(int nCode, WPARAM wParam, LPARAM lParam) {
         const auto* info = reinterpret_cast<const MSLLHOOKSTRUCT*>(lParam);
         const bool injected = (info->flags & (LLMHF_INJECTED | LLMHF_LOWER_IL_INJECTED)) != 0;
         if (!injected) {
-            if (wParam == WM_LBUTTONDOWN) g_physicalLeftDown = true;
-            else if (wParam == WM_LBUTTONUP) g_physicalLeftDown = false;
+            switch (wParam) {
+            case WM_LBUTTONDOWN: g_physicalLeftDown = true; break;
+            case WM_LBUTTONUP: g_physicalLeftDown = false; break;
+            case WM_RBUTTONDOWN: g_physicalRightDown = true; break;
+            case WM_RBUTTONUP: g_physicalRightDown = false; break;
+            default: break;
+            }
         }
     }
     return CallNextHookEx(nullptr, nCode, wParam, lParam);
@@ -103,13 +113,16 @@ bool IsLunarForeground() {
     return match;
 }
 
-void SendLeft(DWORD flag) {
+// Envoie un appui (down=true) ou relachement du bouton selectionne.
+void SendButton(bool down) {
     INPUT input{};
     input.type = INPUT_MOUSE;
-    input.mi.dwFlags = flag;
+    if (g_rightButton)
+        input.mi.dwFlags = down ? MOUSEEVENTF_RIGHTDOWN : MOUSEEVENTF_RIGHTUP;
+    else
+        input.mi.dwFlags = down ? MOUSEEVENTF_LEFTDOWN : MOUSEEVENTF_LEFTUP;
     SendInput(1, &input, sizeof(INPUT));
-    if (flag == MOUSEEVENTF_LEFTDOWN) g_injectedDown = true;
-    else if (flag == MOUSEEVENTF_LEFTUP) g_injectedDown = false;
+    g_injectedDown = down;
 }
 
 // Le hook bas niveau a besoin d'une boucle de messages sur le thread qui l'installe.
@@ -143,7 +156,7 @@ void ClickLoop() {
         const bool focused = IsLunarForeground();
         g_targetFocused = focused;
 
-        if (!g_enabled || !g_physicalLeftDown || !focused) {
+        if (!g_enabled || !PhysicalHeld() || !focused) {
             nextClick = clock::now() + interval;
             std::this_thread::sleep_for(std::chrono::milliseconds(5));
             continue;
@@ -155,11 +168,11 @@ void ClickLoop() {
             continue;
         }
 
-        SendLeft(MOUSEEVENTF_LEFTUP);
+        SendButton(false);
         std::this_thread::sleep_for(upHold);
-        // Si l'utilisateur a relache pendant la pause, on ne renvoie pas DOWN
+        // Si l'utilisateur a relache pendant la pause, on ne renvoie pas d'appui
         // (sinon le bouton resterait bloque enfonce).
-        if (g_physicalLeftDown) SendLeft(MOUSEEVENTF_LEFTDOWN);
+        if (PhysicalHeld()) SendButton(true);
         ++g_clicks;
 
         nextClick += interval;
@@ -193,10 +206,10 @@ void Stop() {
     if (g_clickThread.joinable()) g_clickThread.join();
     if (g_hookThread.joinable()) g_hookThread.join();
 
-    // Garde-fou : si un LEFTDOWN synthetique est encore actif alors que
-    // l'utilisateur ne maintient plus le bouton, on normalise avec un LEFTUP
+    // Garde-fou : si un *DOWN synthetique est encore actif alors que
+    // l'utilisateur ne maintient plus le bouton, on normalise avec un *UP
     // pour ne jamais laisser le bouton "colle" enfonce apres l'arret.
-    if (g_injectedDown && !g_physicalLeftDown) SendLeft(MOUSEEVENTF_LEFTUP);
+    if (g_injectedDown && !PhysicalHeld()) SendButton(false);
 }
 
 void SetCps(int cps) { g_cps = std::clamp(cps, kMinCps, kMaxCps); }
@@ -205,14 +218,29 @@ int GetCps() { return g_cps; }
 void SetEnabled(bool enabled) { g_enabled = enabled; }
 bool IsEnabled() { return g_enabled; }
 
+void SetRightButton(bool right) {
+    // Si on change de bouton alors qu'un appui synthetique est actif, on relache
+    // d'abord l'ancien bouton pour ne pas le laisser enfonce.
+    if (g_rightButton != right && g_injectedDown) {
+        INPUT input{};
+        input.type = INPUT_MOUSE;
+        input.mi.dwFlags = g_rightButton ? MOUSEEVENTF_RIGHTUP : MOUSEEVENTF_LEFTUP;
+        SendInput(1, &input, sizeof(INPUT));
+        g_injectedDown = false;
+    }
+    g_rightButton = right;
+}
+bool UsesRightButton() { return g_rightButton; }
+
 void SetTargetExes(const std::vector<std::wstring>& exes) {
     std::lock_guard<std::mutex> lock(g_exesMutex);
     g_targetExes.clear();
     for (const auto& exe : exes) g_targetExes.push_back(ToLower(exe));
 }
 
-bool IsHolding() { return g_physicalLeftDown; }
+bool IsHolding() { return PhysicalHeld(); }
 bool IsTargetFocused() { return g_targetFocused; }
 uint64_t ClickCount() { return g_clicks; }
+void ResetClickCount() { g_clicks = 0; }
 
 }  // namespace clicker

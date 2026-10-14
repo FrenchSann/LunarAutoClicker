@@ -21,8 +21,21 @@ Fenêtre Direct2D sans bordure, sans dépendance externe :
 - **Anneau intérieur** : CPS réellement mesuré
 - **Oscilloscope** : chaque clic simulé apparaît en temps réel
 - **Préréglages** : 8 / 10 / 12 / 14 / 16 / 20
-- **Indicateurs** : Lunar détecté, clic maintenu (HOLD)
+- **Sélecteur de bouton** : clic gauche ou droit (dans l'en-tête)
+- **Indicateurs** : Lunar détecté, bouton maintenu (HOLD)
 - Réglages sauvegardés dans `%APPDATA%\LunarAutoClicker\settings.ini`
+- Rendu adaptatif 60 fps / 30 fps au repos (faible consommation)
+
+## Confidentialité (bouclier dans l'en-tête)
+
+Option de nettoyage des données créées par l'outil, **désactivée par défaut** :
+
+- liste exacte, avec chemins, de ce qui sera supprimé ;
+- périmètre strict : uniquement le dossier `%APPDATA%\LunarAutoClicker` ;
+- ne touche **jamais** aux journaux Windows, à l'anti-triche ni aux fichiers d'autres logiciels ;
+- effacement à la fermeture et/ou déclenchement manuel (« Nettoyer maintenant ») ;
+- option d'effacement sécurisé (réécriture du contenu avant suppression) ;
+- erreurs (fichier verrouillé, droits insuffisants) gérées sans planter.
 
 ## Utilisation
 

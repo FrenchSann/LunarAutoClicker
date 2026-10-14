@@ -27,6 +27,7 @@
 #include <vector>
 
 #include "clicker.h"
+#include "cleanup.h"
 
 #pragma comment(lib, "d2d1.lib")
 #pragma comment(lib, "dwrite.lib")
@@ -48,6 +49,16 @@ constexpr D2D1_POINT_2F kDialCenter = {kW / 2.f, 282.f};
 constexpr float kDialR = 126.f;
 constexpr D2D1_RECT_F kCloseBtn = {kW - 46.f, 14.f, kW - 16.f, 42.f};
 constexpr D2D1_RECT_F kMinBtn = {kW - 80.f, 14.f, kW - 50.f, 42.f};
+constexpr D2D1_RECT_F kShieldBtn = {kW - 114.f, 14.f, kW - 84.f, 42.f};
+// Selecteur de bouton (clic gauche / droit) dans l'en-tete.
+constexpr D2D1_RECT_F kBtnSeg = {kW - 210.f, 15.f, kW - 122.f, 41.f};
+
+// Panneau "Confidentialite" (superpose, occupe toute la fenetre).
+constexpr D2D1_RECT_F kPrivPanel = {20.f, 64.f, kW - 20.f, kH - 18.f};
+constexpr D2D1_RECT_F kPrivExitRow = {kPrivPanel.left + 14.f, 400.f, kPrivPanel.right - 14.f, 442.f};
+constexpr D2D1_RECT_F kPrivSecureRow = {kPrivPanel.left + 14.f, 450.f, kPrivPanel.right - 14.f, 492.f};
+constexpr D2D1_RECT_F kPrivCleanBtn = {kPrivPanel.left + 14.f, 540.f, kW / 2.f - 6.f, 582.f};
+constexpr D2D1_RECT_F kPrivBackBtn = {kW / 2.f + 6.f, 540.f, kPrivPanel.right - 14.f, 582.f};
 constexpr D2D1_RECT_F kGraph = {24.f, 448.f, kW - 24.f, 512.f};
 constexpr D2D1_RECT_F kToggleCard = {24.f, 578.f, kW - 24.f, 630.f};
 constexpr float kChipsTop = 528.f;
@@ -62,7 +73,10 @@ constexpr UINT_PTR kFrameTimer = 1;
 constexpr int kHotkeyToggle = 1;
 constexpr int kHotkeyQuit = 2;
 
-enum class Hit { None, Close, Minimize, Dial, Chip, Toggle };
+enum class Hit {
+    None, Close, Minimize, Shield, BtnLeft, BtnRight, Dial, Chip, Toggle,
+    PrivExit, PrivSecure, PrivClean, PrivBack
+};
 
 // ---------------------------------------------------------------------------
 // Couleurs
@@ -134,16 +148,26 @@ std::wstring SettingsPath() {
     return path;
 }
 
+// Option de confidentialite, desactivee par defaut.
+bool g_cleanOnExit = false;
+bool g_secureWipe = false;
+
 void LoadSettings() {
     const std::wstring path = SettingsPath();
     clicker::SetCps(int(GetPrivateProfileIntW(L"clicker", L"cps", 12, path.c_str())));
     clicker::SetEnabled(GetPrivateProfileIntW(L"clicker", L"enabled", 1, path.c_str()) != 0);
+    clicker::SetRightButton(GetPrivateProfileIntW(L"clicker", L"right_button", 0, path.c_str()) != 0);
+    g_cleanOnExit = GetPrivateProfileIntW(L"privacy", L"clean_on_exit", 0, path.c_str()) != 0;
+    g_secureWipe = GetPrivateProfileIntW(L"privacy", L"secure_wipe", 0, path.c_str()) != 0;
 }
 
 void SaveSettings() {
     const std::wstring path = SettingsPath();
     WritePrivateProfileStringW(L"clicker", L"cps", std::to_wstring(clicker::GetCps()).c_str(), path.c_str());
     WritePrivateProfileStringW(L"clicker", L"enabled", clicker::IsEnabled() ? L"1" : L"0", path.c_str());
+    WritePrivateProfileStringW(L"clicker", L"right_button", clicker::UsesRightButton() ? L"1" : L"0", path.c_str());
+    WritePrivateProfileStringW(L"privacy", L"clean_on_exit", g_cleanOnExit ? L"1" : L"0", path.c_str());
+    WritePrivateProfileStringW(L"privacy", L"secure_wipe", g_secureWipe ? L"1" : L"0", path.c_str());
 }
 
 // ---------------------------------------------------------------------------
@@ -172,6 +196,8 @@ private:
     void DrawGraph();
     void DrawChips();
     void DrawToggle();
+    void DrawPrivacy();
+    void RunCleanup();
 
     void FillRound(const D2D1_RECT_F& r, float radius, D2D1_COLOR_F c);
     void StrokeRound(const D2D1_RECT_F& r, float radius, D2D1_COLOR_F c, float width = 1.f);
@@ -193,15 +219,21 @@ private:
     ComPtr<ID2D1LinearGradientBrush> spectrumBrush_;
     ComPtr<ID2D1LinearGradientBrush> bgBrush_;
     ComPtr<ID2D1RadialGradientBrush> glowBrush_;
+    ComPtr<ID2D1StrokeStyle> roundStroke_;  // reutilise (evite une recreation par frame)
 
     ComPtr<IDWriteTextFormat> fmtLogo_, fmtLogoThin_, fmtBig_, fmtLabel_, fmtSmall_, fmtSmallCenter_,
-        fmtChip_, fmtCard_, fmtIcon_;
+        fmtChip_, fmtCard_, fmtIcon_, fmtBody_;
 
     // Etat d'interaction
     Hit hover_ = Hit::None;
     int hoverChip_ = -1;
     bool dragging_ = false;
     bool trackingMouse_ = false;
+
+    // Panneau confidentialite
+    bool showPrivacy_ = false;
+    float privacyAnim_ = 0.f;
+    std::wstring cleanupResult_;
 
     // Animation
     LARGE_INTEGER freq_{}, last_{};
@@ -216,6 +248,7 @@ private:
     std::array<float, kPresets.size()> hoverChips_{};
     uint64_t lastClickCount_ = 0;
     std::deque<double> clickTimes_;
+    UINT curTimerMs_ = 16;
 };
 
 bool App::Create(HINSTANCE instance) {
@@ -260,7 +293,8 @@ bool App::Create(HINSTANCE instance) {
 
     QueryPerformanceFrequency(&freq_);
     QueryPerformanceCounter(&last_);
-    SetTimer(hwnd_, kFrameTimer, 8, nullptr);
+    curTimerMs_ = 16;
+    SetTimer(hwnd_, kFrameTimer, curTimerMs_, nullptr);  // 60 fps ; abaisse a 30 au repos
 
     ShowWindow(hwnd_, SW_SHOW);
     UpdateWindow(hwnd_);
@@ -282,7 +316,14 @@ bool App::CreateDeviceIndependent() {
     fmtChip_ = MakeFormat(14.f, DWRITE_FONT_WEIGHT_BOLD, DWRITE_TEXT_ALIGNMENT_CENTER);
     fmtCard_ = MakeFormat(15.f, DWRITE_FONT_WEIGHT_BOLD);
     fmtIcon_ = MakeFormat(12.f, DWRITE_FONT_WEIGHT_NORMAL, DWRITE_TEXT_ALIGNMENT_CENTER);
-    return fmtLogo_ && fmtBig_ && fmtIcon_;
+    d2d_->CreateStrokeStyle(D2D1::StrokeStyleProperties(D2D1_CAP_STYLE_ROUND, D2D1_CAP_STYLE_ROUND), nullptr, 0,
+                            roundStroke_.GetAddressOf());
+    fmtBody_ = MakeFormat(12.5f, DWRITE_FONT_WEIGHT_NORMAL);
+    if (fmtBody_) {
+        fmtBody_->SetWordWrapping(DWRITE_WORD_WRAPPING_WRAP);
+        fmtBody_->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_NEAR);
+    }
+    return fmtLogo_ && fmtBig_ && fmtIcon_ && fmtBody_;
 }
 
 ComPtr<IDWriteTextFormat> App::MakeFormat(float size, DWRITE_FONT_WEIGHT weight, DWRITE_TEXT_ALIGNMENT align) {
@@ -369,11 +410,8 @@ void App::Arc(D2D1_POINT_2F c, float r, float fromDeg, float toDeg, D2D1_COLOR_F
     sink->EndFigure(D2D1_FIGURE_END_OPEN);
     sink->Close();
 
-    ComPtr<ID2D1StrokeStyle> style;
-    d2d_->CreateStrokeStyle(D2D1::StrokeStyleProperties(D2D1_CAP_STYLE_ROUND, D2D1_CAP_STYLE_ROUND), nullptr, 0,
-                            style.GetAddressOf());
     brush_->SetColor(color);
-    rt_->DrawGeometry(path.Get(), brush_.Get(), width, style.Get());
+    rt_->DrawGeometry(path.Get(), brush_.Get(), width, roundStroke_.Get());
 }
 
 // ---------------------------------------------------------------------------
@@ -412,6 +450,17 @@ void App::Tick() {
     hoverToggle_ = Approach(hoverToggle_, hover_ == Hit::Toggle ? 1.f : 0.f, 14.f, dt);
     for (size_t i = 0; i < hoverChips_.size(); ++i)
         hoverChips_[i] = Approach(hoverChips_[i], (hover_ == Hit::Chip && hoverChip_ == int(i)) ? 1.f : 0.f, 16.f, dt);
+    privacyAnim_ = Approach(privacyAnim_, showPrivacy_ ? 1.f : 0.f, 16.f, dt);
+
+    // Cadence adaptative : 60 fps quand on interagit ou clique, 30 fps au repos
+    // (le fond respire lentement, 30 fps reste fluide) -> CPU/GPU reduits.
+    const bool active = clicker::IsHolding() || dragging_ || showPrivacy_ || hover_ != Hit::None ||
+                        pulse_ > 0.02f || measuredCps_ > 0.05f || (privacyAnim_ > 0.01f && privacyAnim_ < 0.99f);
+    const UINT target = active ? 16u : 33u;
+    if (target != curTimerMs_) {
+        curTimerMs_ = target;
+        SetTimer(hwnd_, kFrameTimer, curTimerMs_, nullptr);
+    }
 
     if (!IsIconic(hwnd_)) Render();
 }
@@ -430,6 +479,7 @@ void App::Render() {
     DrawGraph();
     DrawChips();
     DrawToggle();
+    if (privacyAnim_ > 0.004f) DrawPrivacy();
 
     if (rt_->EndDraw() == D2DERR_RECREATE_TARGET) DiscardDeviceResources();
 }
@@ -473,6 +523,50 @@ void App::DrawHeader() {
 
     Text(L"LUNAR", fmtLogo_.Get(), {54.f, 14.f, 130.f, 44.f}, kText);
     Text(L"CLICKER", fmtLogoThin_.Get(), {113.f, 14.f, 220.f, 44.f}, WithAlpha(kText, 0.55f));
+
+    // Bouton bouclier (confidentialite).
+    const float shieldHover = (hover_ == Hit::Shield) ? 1.f : 0.f;
+    FillRound(kShieldBtn, 8.f, WithAlpha(kText, 0.08f * shieldHover + 0.06f * privacyAnim_));
+    const D2D1_COLOR_F shieldCol = Mix(kMuted, g_cleanOnExit ? kGreen : kText, std::max(shieldHover, privacyAnim_));
+    const float sx = (kShieldBtn.left + kShieldBtn.right) / 2.f, sy = (kShieldBtn.top + kShieldBtn.bottom) / 2.f;
+    {
+        ComPtr<ID2D1PathGeometry> sh;
+        if (SUCCEEDED(d2d_->CreatePathGeometry(sh.GetAddressOf()))) {
+            ComPtr<ID2D1GeometrySink> sink;
+            sh->Open(sink.GetAddressOf());
+            sink->BeginFigure({sx, sy - 8.f}, D2D1_FIGURE_BEGIN_FILLED);
+            sink->AddLine({sx + 6.f, sy - 5.f});
+            sink->AddLine({sx + 6.f, sy + 1.f});
+            sink->AddLine({sx, sy + 8.f});
+            sink->AddLine({sx - 6.f, sy + 1.f});
+            sink->AddLine({sx - 6.f, sy - 5.f});
+            sink->EndFigure(D2D1_FIGURE_END_CLOSED);
+            sink->Close();
+            brush_->SetColor(shieldCol);
+            rt_->DrawGeometry(sh.Get(), brush_.Get(), 1.4f);
+            if (g_cleanOnExit) {
+                brush_->SetColor(WithAlpha(kGreen, 0.9f));
+                rt_->DrawLine({sx - 2.5f, sy}, {sx - 0.5f, sy + 2.5f}, brush_.Get(), 1.5f);
+                rt_->DrawLine({sx - 0.5f, sy + 2.5f}, {sx + 3.f, sy - 3.f}, brush_.Get(), 1.5f);
+            }
+        }
+    }
+
+    // Selecteur de bouton simule : clic gauche / droit.
+    const bool right = clicker::UsesRightButton();
+    FillRound(kBtnSeg, 8.f, WithAlpha(kText, 0.05f));
+    StrokeRound(kBtnSeg, 8.f, WithAlpha(kText, 0.08f));
+    const float mid = (kBtnSeg.left + kBtnSeg.right) / 2.f;
+    const D2D1_RECT_F cellL = {kBtnSeg.left + 2.f, kBtnSeg.top + 2.f, mid - 1.f, kBtnSeg.bottom - 2.f};
+    const D2D1_RECT_F cellR = {mid + 1.f, kBtnSeg.top + 2.f, kBtnSeg.right - 2.f, kBtnSeg.bottom - 2.f};
+    const D2D1_RECT_F active = right ? cellR : cellL;
+    spectrumBrush_->SetStartPoint({active.left, 0});
+    spectrumBrush_->SetEndPoint({active.right, 0});
+    spectrumBrush_->SetOpacity(0.9f);
+    rt_->FillRoundedRectangle(D2D1::RoundedRect(active, 6.f, 6.f), spectrumBrush_.Get());
+    spectrumBrush_->SetOpacity(1.f);
+    Text(L"GAUCHE", fmtLabel_.Get(), cellL, right ? WithAlpha(kMuted, 0.8f) : Rgb(10, 10, 18));
+    Text(L"DROIT", fmtLabel_.Get(), cellR, right ? Rgb(10, 10, 18) : WithAlpha(kMuted, 0.8f));
 
     // Boutons fenetre.
     FillRound(kMinBtn, 8.f, WithAlpha(kText, 0.08f * hoverMin_));
@@ -519,10 +613,7 @@ void App::DrawDial() {
     const float R = kDialR;
     const int ticks = clicker::kMaxCps - clicker::kMinCps + 1;
     const float dim = 0.35f + 0.65f * enabledAnim_;
-
-    ComPtr<ID2D1StrokeStyle> round;
-    d2d_->CreateStrokeStyle(D2D1::StrokeStyleProperties(D2D1_CAP_STYLE_ROUND, D2D1_CAP_STYLE_ROUND), nullptr, 0,
-                            round.GetAddressOf());
+    ID2D1StrokeStyle* round = roundStroke_.Get();
 
     // Anneau exterieur fin + graduations "bourse".
     Arc(c, R + 26.f, kArcStart, kArcStart + kArcSweep, WithAlpha(kText, 0.06f), 1.f);
@@ -542,10 +633,10 @@ void App::DrawDial() {
 
         if (lit > 0.f) {
             brush_->SetColor(WithAlpha(col, 0.18f * lit * dim));
-            rt_->DrawLine(p0, p1, brush_.Get(), 13.f, round.Get());
+            rt_->DrawLine(p0, p1, brush_.Get(), 13.f, round);
         }
         brush_->SetColor(Mix(WithAlpha(kText, 0.08f), WithAlpha(col, dim), lit));
-        rt_->DrawLine(p0, p1, brush_.Get(), 5.f, round.Get());
+        rt_->DrawLine(p0, p1, brush_.Get(), 5.f, round);
     }
 
     // Anneau interieur : CPS reellement mesure.
@@ -721,12 +812,156 @@ void App::DrawToggle() {
     rt_->FillEllipse(D2D1::Ellipse(thumb, thumbR, thumbR), brush_.Get());
 }
 
+namespace {
+std::wstring FormatBytes(uint64_t n) {
+    if (n < 1024) return std::to_wstring(n) + L" o";
+    if (n < 1024 * 1024) return std::to_wstring((n + 512) / 1024) + L" Ko";
+    return std::to_wstring((n + 512 * 1024) / (1024 * 1024)) + L" Mo";
+}
+}  // namespace
+
+// Panneau de confidentialite : liste exacte des donnees de l'appli, options de
+// nettoyage, effacement securise et declenchement manuel.
+void App::DrawPrivacy() {
+    const float a = privacyAnim_;
+    brush_->SetColor(Rgb(4, 4, 8, 0.72f * a));  // voile sombre sur toute la fenetre
+    rt_->FillRectangle({0, 0, kW, kH}, brush_.Get());
+
+    const D2D1_RECT_F& p = kPrivPanel;
+    FillRound(p, 16.f, WithAlpha(Rgb(16, 15, 26), a));
+    StrokeRound(p, 16.f, WithAlpha(kViolet, 0.35f * a));
+
+    Text(L"CONFIDENTIALITÉ", fmtCard_.Get(), {p.left + 20, 78, p.right - 20, 102}, WithAlpha(kText, a));
+    Text(L"Nettoyage des données créées par l'outil", fmtSmall_.Get(), {p.left + 20, 102, p.right - 20, 120},
+         WithAlpha(kMuted, a));
+    Text(L"Supprime uniquement les fichiers créés par Lunar AutoClicker dans son "
+         L"propre dossier. Ne touche jamais aux journaux Windows, à l'anti-triche "
+         L"ni aux fichiers d'autres logiciels.",
+         fmtBody_.Get(), {p.left + 20, 126, p.right - 20, 188}, WithAlpha(kMuted, a));
+
+    Text(L"CES DONNÉES SERONT SUPPRIMÉES", fmtSmall_.Get(), {p.left + 20, 192, p.right - 20, 210},
+         WithAlpha(kCyan, 0.85f * a));
+
+    const D2D1_RECT_F list = {p.left + 14, 212, p.right - 14, 392};
+    FillRound(list, 10.f, WithAlpha(Rgb(8, 8, 14), a));
+    StrokeRound(list, 10.f, WithAlpha(kText, 0.06f * a));
+    const auto items = cleanup::ListAppData();
+    if (items.empty()) {
+        Text(L"Aucune donnée pour le moment — rien à supprimer.", fmtSmall_.Get(),
+             {list.left + 14, list.top, list.right - 14, list.bottom}, WithAlpha(kMuted, a));
+    } else {
+        // Raccourci d'affichage : remplace le profil utilisateur par %APPDATA%.
+        wchar_t* appData = nullptr;
+        std::wstring prefix;
+        if (SUCCEEDED(SHGetKnownFolderPath(FOLDERID_RoamingAppData, 0, nullptr, &appData))) prefix = appData;
+        CoTaskMemFree(appData);
+
+        float y = list.top + 10;
+        for (const auto& it : items) {
+            if (y + 20 > list.bottom) break;
+            std::wstring shown = it.path;
+            if (!prefix.empty() && shown.rfind(prefix, 0) == 0) shown = L"%APPDATA%" + shown.substr(prefix.size());
+            brush_->SetColor(WithAlpha(kCyan, 0.7f * a));
+            rt_->FillEllipse(D2D1::Ellipse({list.left + 16, y + 10}, 2.f, 2.f), brush_.Get());
+            Text(shown, fmtSmall_.Get(), {list.left + 28, y, list.right - 72, y + 20}, WithAlpha(kText, a));
+            Text(FormatBytes(it.size), fmtSmall_.Get(), {list.right - 68, y, list.right - 12, y + 20},
+                 WithAlpha(kMuted, a));
+            y += 22;
+        }
+        Text(L"+ données en mémoire (compteur, historique d'activité)", fmtSmall_.Get(),
+             {list.left + 14, y + 2, list.right - 14, y + 22}, WithAlpha(kMuted, 0.7f * a));
+    }
+
+    // Interrupteur reutilisable (couleur verte quand actif).
+    auto drawSwitch = [&](const D2D1_RECT_F& row, bool on) {
+        const float sw = 46.f, sh = 26.f;
+        const D2D1_RECT_F track = {row.right - 14 - sw, (row.top + row.bottom - sh) / 2, row.right - 14,
+                                   (row.top + row.bottom + sh) / 2};
+        FillRound(track, sh / 2, WithAlpha(kText, 0.1f * a));
+        if (on) FillRound(track, sh / 2, WithAlpha(kGreen, 0.9f * a));
+        const float tr = sh / 2 - 4;
+        const float tx = track.left + sh / 2 + (sw - sh) * (on ? 1.f : 0.f);
+        brush_->SetColor(Rgb(0, 0, 0, 0.3f * a));
+        rt_->FillEllipse(D2D1::Ellipse({tx, (track.top + track.bottom) / 2 + 1.f}, tr, tr), brush_.Get());
+        brush_->SetColor(WithAlpha(on ? Rgb(10, 20, 14) : kText, a));
+        rt_->FillEllipse(D2D1::Ellipse({tx, (track.top + track.bottom) / 2}, tr, tr), brush_.Get());
+    };
+
+    const D2D1_RECT_F& ex = kPrivExitRow;
+    FillRound(ex, 10.f, WithAlpha(kText, (hover_ == Hit::PrivExit ? 0.06f : 0.03f) * a));
+    Text(L"Effacer mes données à la fermeture", fmtSmall_.Get(), {ex.left + 14, ex.top + 5, ex.right - 70, ex.top + 23},
+         WithAlpha(kText, a));
+    Text(L"désactivé par défaut", fmtSmall_.Get(), {ex.left + 14, ex.top + 21, ex.right - 70, ex.top + 39},
+         WithAlpha(kMuted, 0.7f * a));
+    drawSwitch(ex, g_cleanOnExit);
+
+    const D2D1_RECT_F& se = kPrivSecureRow;
+    FillRound(se, 10.f, WithAlpha(kText, (hover_ == Hit::PrivSecure ? 0.06f : 0.03f) * a));
+    Text(L"Effacement sécurisé (réécriture)", fmtSmall_.Get(), {se.left + 14, se.top + 5, se.right - 70, se.top + 23},
+         WithAlpha(kText, a));
+    Text(L"réécrit le contenu avant suppression", fmtSmall_.Get(), {se.left + 14, se.top + 21, se.right - 70, se.top + 39},
+         WithAlpha(kMuted, 0.7f * a));
+    drawSwitch(se, g_secureWipe);
+
+    Text(L"Sur SSD, l'écrasement physique n'est pas garanti.", fmtSmall_.Get(),
+         {p.left + 20, 504, p.right - 20, 524}, WithAlpha(kMuted, 0.6f * a));
+
+    // Bouton "Nettoyer maintenant" (declenchement manuel).
+    const bool chov = hover_ == Hit::PrivClean;
+    FillRound(kPrivCleanBtn, 11.f, WithAlpha(kAmber, (chov ? 0.22f : 0.12f) * a));
+    StrokeRound(kPrivCleanBtn, 11.f, WithAlpha(kAmber, 0.6f * a));
+    Text(L"Nettoyer maintenant", fmtChip_.Get(), kPrivCleanBtn, WithAlpha(Mix(kAmber, kText, chov ? 0.4f : 0.f), a));
+
+    const bool bhov = hover_ == Hit::PrivBack;
+    FillRound(kPrivBackBtn, 11.f, WithAlpha(kText, (bhov ? 0.09f : 0.04f) * a));
+    StrokeRound(kPrivBackBtn, 11.f, WithAlpha(kText, 0.1f * a));
+    Text(L"Fermer", fmtChip_.Get(), kPrivBackBtn, WithAlpha(Mix(kMuted, kText, bhov ? 1.f : 0.6f), a));
+
+    if (!cleanupResult_.empty()) {
+        Text(cleanupResult_, fmtBody_.Get(), {p.left + 20, 590, p.right - 20, p.bottom - 8}, WithAlpha(kGreen, a));
+    }
+}
+
+void App::RunCleanup() {
+    const bool secure = g_secureWipe;
+    const cleanup::Result r = cleanup::CleanAppData(secure);
+    clicker::ResetClickCount();  // donnees en memoire
+    clickTimes_.clear();
+    lastClickCount_ = 0;
+
+    if (r.deleted == 0 && r.failed == 0) {
+        cleanupResult_ = L"Aucune donnée sur disque — mémoire effacée.";
+    } else {
+        std::wstring msg = std::to_wstring(r.deleted) + L" fichier(s) supprimé(s)";
+        if (secure) msg += L" avec réécriture";
+        msg += L", mémoire effacée.";
+        if (r.failed) {
+            msg += L"\n" + std::to_wstring(r.failed) + L" échec : ";
+            msg += r.errors.empty() ? L"" : r.errors.front();
+        }
+        cleanupResult_ = msg;
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Interaction
 // ---------------------------------------------------------------------------
 Hit App::HitTest(float x, float y, int* chip) const {
+    // Quand le panneau confidentialite est ouvert, il capte toute l'interaction.
+    if (showPrivacy_) {
+        if (InRect(kPrivCleanBtn, x, y)) return Hit::PrivClean;
+        if (InRect(kPrivBackBtn, x, y)) return Hit::PrivBack;
+        if (InRect(kPrivExitRow, x, y)) return Hit::PrivExit;
+        if (InRect(kPrivSecureRow, x, y)) return Hit::PrivSecure;
+        if (InRect(kShieldBtn, x, y)) return Hit::Shield;
+        if (InRect(kCloseBtn, x, y)) return Hit::Close;
+        if (InRect(kMinBtn, x, y)) return Hit::Minimize;
+        return Hit::None;
+    }
     if (InRect(kCloseBtn, x, y)) return Hit::Close;
     if (InRect(kMinBtn, x, y)) return Hit::Minimize;
+    if (InRect(kShieldBtn, x, y)) return Hit::Shield;
+    if (InRect(kBtnSeg, x, y)) return x < (kBtnSeg.left + kBtnSeg.right) / 2.f ? Hit::BtnLeft : Hit::BtnRight;
     if (InRect(kToggleCard, x, y)) return Hit::Toggle;
     for (int i = 0; i < int(kPresets.size()); ++i) {
         if (InRect(ChipRect(i), x, y)) {
@@ -840,6 +1075,12 @@ LRESULT App::Handle(UINT msg, WPARAM wParam, LPARAM lParam) {
         switch (HitTest(x, y, &chip)) {
         case Hit::Close: PostMessageW(hwnd_, WM_CLOSE, 0, 0); break;
         case Hit::Minimize: ShowWindow(hwnd_, SW_MINIMIZE); break;
+        case Hit::Shield:
+            showPrivacy_ = !showPrivacy_;
+            if (showPrivacy_) cleanupResult_.clear();
+            break;
+        case Hit::BtnLeft: clicker::SetRightButton(false); SaveSettings(); break;
+        case Hit::BtnRight: clicker::SetRightButton(true); SaveSettings(); break;
         case Hit::Toggle: ToggleEnabled(); break;
         case Hit::Chip: clicker::SetCps(kPresets[size_t(chip)]); SaveSettings(); break;
         case Hit::Dial:
@@ -847,6 +1088,10 @@ LRESULT App::Handle(UINT msg, WPARAM wParam, LPARAM lParam) {
             SetCapture(hwnd_);
             SetCpsFromPoint(x, y);
             break;
+        case Hit::PrivExit: g_cleanOnExit = !g_cleanOnExit; SaveSettings(); break;
+        case Hit::PrivSecure: g_secureWipe = !g_secureWipe; SaveSettings(); break;
+        case Hit::PrivClean: RunCleanup(); break;
+        case Hit::PrivBack: showPrivacy_ = false; break;
         case Hit::None: break;
         }
         return 0;
@@ -861,15 +1106,21 @@ LRESULT App::Handle(UINT msg, WPARAM wParam, LPARAM lParam) {
         return 0;
 
     case WM_MOUSEWHEEL:
+        if (showPrivacy_) return 0;  // le cadran est masque par le panneau
         clicker::SetCps(clicker::GetCps() + (GET_WHEEL_DELTA_WPARAM(wParam) > 0 ? 1 : -1));
         SaveSettings();
         return 0;
 
     case WM_KEYDOWN:
+        if (wParam == VK_ESCAPE) {
+            if (showPrivacy_) showPrivacy_ = false;  // referme le panneau d'abord
+            else PostMessageW(hwnd_, WM_CLOSE, 0, 0);
+            return 0;
+        }
+        if (showPrivacy_) break;  // pas de reglage CPS tant que le panneau est ouvert
         if (wParam == VK_RIGHT || wParam == VK_UP) clicker::SetCps(clicker::GetCps() + 1);
         else if (wParam == VK_LEFT || wParam == VK_DOWN) clicker::SetCps(clicker::GetCps() - 1);
         else if (wParam == VK_SPACE) ToggleEnabled();
-        else if (wParam == VK_ESCAPE) PostMessageW(hwnd_, WM_CLOSE, 0, 0);
         else break;
         SaveSettings();
         return 0;
@@ -968,6 +1219,11 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int) {
     }
 
     clicker::Stop();
+
+    // Nettoyage a la fermeture, si l'utilisateur l'a active dans Confidentialite.
+    // Perimetre strict : le dossier de l'appli uniquement (voir cleanup.cpp).
+    if (g_cleanOnExit) cleanup::CleanAppData(g_secureWipe);
+
     timeEndPeriod(1);
     CoUninitialize();
     if (instanceMutex) {
