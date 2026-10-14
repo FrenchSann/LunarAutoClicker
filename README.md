@@ -13,6 +13,9 @@ cmake -S . -B build
 cmake --build build --config Release
 ```
 
+Un workflow GitHub Actions compile aussi l'outil à chaque *push* et publie
+automatiquement l'exécutable en Release à chaque tag `v*`.
+
 ## Interface
 
 Fenêtre Direct2D sans bordure, sans dépendance externe :
@@ -22,6 +25,8 @@ Fenêtre Direct2D sans bordure, sans dépendance externe :
 - **Oscilloscope** : chaque clic simulé apparaît en temps réel
 - **Préréglages** : 8 / 10 / 12 / 14 / 16 / 20
 - **Sélecteur de bouton** : clic gauche ou droit (dans l'en-tête)
+- **Raccourci configurable** : clique la pastille de touche dans la carte AUTOCLICK, puis appuie sur la touche voulue
+- **Réglages & profils** (icône engrenage) : statistiques de session (durée, clics, CPS max) et 3 profils (CPS + bouton) à enregistrer / charger
 - **Indicateurs** : Lunar détecté, bouton maintenu (HOLD)
 - Réglages sauvegardés dans `%APPDATA%\LunarAutoClicker\settings.ini`
 - Rendu adaptatif 60 fps / 30 fps au repos (faible consommation)

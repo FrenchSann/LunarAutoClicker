@@ -50,8 +50,11 @@ constexpr float kDialR = 126.f;
 constexpr D2D1_RECT_F kCloseBtn = {kW - 46.f, 14.f, kW - 16.f, 42.f};
 constexpr D2D1_RECT_F kMinBtn = {kW - 80.f, 14.f, kW - 50.f, 42.f};
 constexpr D2D1_RECT_F kShieldBtn = {kW - 114.f, 14.f, kW - 84.f, 42.f};
+constexpr D2D1_RECT_F kGearBtn = {kW - 148.f, 14.f, kW - 118.f, 42.f};
 // Selecteur de bouton (clic gauche / droit) dans l'en-tete.
-constexpr D2D1_RECT_F kBtnSeg = {kW - 210.f, 15.f, kW - 122.f, 41.f};
+constexpr D2D1_RECT_F kBtnSeg = {kW - 244.f, 15.f, kW - 156.f, 41.f};
+// Pastille du raccourci (dans la carte AUTOCLICK), cliquable pour redefinir.
+constexpr D2D1_RECT_F kHotkeyChip = {42.f, 603.f, 110.f, 623.f};
 
 // Panneau "Confidentialite" (superpose, occupe toute la fenetre).
 constexpr D2D1_RECT_F kPrivPanel = {20.f, 64.f, kW - 20.f, kH - 18.f};
@@ -74,8 +77,9 @@ constexpr int kHotkeyToggle = 1;
 constexpr int kHotkeyQuit = 2;
 
 enum class Hit {
-    None, Close, Minimize, Shield, BtnLeft, BtnRight, Dial, Chip, Toggle,
-    PrivExit, PrivSecure, PrivClean, PrivBack
+    None, Close, Minimize, Shield, Gear, BtnLeft, BtnRight, Dial, Chip, Toggle, HotkeyChip,
+    PrivExit, PrivSecure, PrivClean, PrivBack,
+    GearBack, ProfLoad, ProfSave
 };
 
 // ---------------------------------------------------------------------------
@@ -152,13 +156,52 @@ std::wstring SettingsPath() {
 bool g_cleanOnExit = false;
 bool g_secureWipe = false;
 
+// Raccourci global on/off (configurable).
+int g_toggleVk = VK_F8;
+
+// Profils : CPS + bouton memorises dans 3 emplacements.
+struct Profile {
+    bool used = false;
+    int cps = 12;
+    bool right = false;
+};
+constexpr int kProfileCount = 3;
+Profile g_profiles[kProfileCount];
+
+// Nom lisible d'une touche virtuelle (pour l'affichage du raccourci).
+std::wstring KeyName(int vk) {
+    if (vk >= VK_F1 && vk <= VK_F24) return L"F" + std::to_wstring(vk - VK_F1 + 1);
+    if ((vk >= '0' && vk <= '9') || (vk >= 'A' && vk <= 'Z')) return std::wstring(1, wchar_t(vk));
+    switch (vk) {
+    case VK_SPACE: return L"Espace";
+    case VK_OEM_3: return L"²";
+    case VK_TAB: return L"Tab";
+    case VK_LSHIFT: case VK_RSHIFT: case VK_SHIFT: return L"Maj";
+    case VK_LCONTROL: case VK_RCONTROL: case VK_CONTROL: return L"Ctrl";
+    case VK_XBUTTON1: return L"Souris4";
+    case VK_XBUTTON2: return L"Souris5";
+    default: break;
+    }
+    const UINT sc = MapVirtualKeyW(UINT(vk), MAPVK_VK_TO_VSC);
+    wchar_t name[64];
+    if (sc && GetKeyNameTextW(LONG(sc << 16), name, 64) > 0) return name;
+    return L"Touche " + std::to_wstring(vk);
+}
+
 void LoadSettings() {
     const std::wstring path = SettingsPath();
     clicker::SetCps(int(GetPrivateProfileIntW(L"clicker", L"cps", 12, path.c_str())));
     clicker::SetEnabled(GetPrivateProfileIntW(L"clicker", L"enabled", 1, path.c_str()) != 0);
     clicker::SetRightButton(GetPrivateProfileIntW(L"clicker", L"right_button", 0, path.c_str()) != 0);
+    g_toggleVk = int(GetPrivateProfileIntW(L"hotkey", L"toggle_vk", VK_F8, path.c_str()));
     g_cleanOnExit = GetPrivateProfileIntW(L"privacy", L"clean_on_exit", 0, path.c_str()) != 0;
     g_secureWipe = GetPrivateProfileIntW(L"privacy", L"secure_wipe", 0, path.c_str()) != 0;
+    for (int i = 0; i < kProfileCount; ++i) {
+        const std::wstring s = L"profile" + std::to_wstring(i);
+        g_profiles[i].used = GetPrivateProfileIntW(s.c_str(), L"used", 0, path.c_str()) != 0;
+        g_profiles[i].cps = int(GetPrivateProfileIntW(s.c_str(), L"cps", 12, path.c_str()));
+        g_profiles[i].right = GetPrivateProfileIntW(s.c_str(), L"right", 0, path.c_str()) != 0;
+    }
 }
 
 void SaveSettings() {
@@ -166,8 +209,15 @@ void SaveSettings() {
     WritePrivateProfileStringW(L"clicker", L"cps", std::to_wstring(clicker::GetCps()).c_str(), path.c_str());
     WritePrivateProfileStringW(L"clicker", L"enabled", clicker::IsEnabled() ? L"1" : L"0", path.c_str());
     WritePrivateProfileStringW(L"clicker", L"right_button", clicker::UsesRightButton() ? L"1" : L"0", path.c_str());
+    WritePrivateProfileStringW(L"hotkey", L"toggle_vk", std::to_wstring(g_toggleVk).c_str(), path.c_str());
     WritePrivateProfileStringW(L"privacy", L"clean_on_exit", g_cleanOnExit ? L"1" : L"0", path.c_str());
     WritePrivateProfileStringW(L"privacy", L"secure_wipe", g_secureWipe ? L"1" : L"0", path.c_str());
+    for (int i = 0; i < kProfileCount; ++i) {
+        const std::wstring s = L"profile" + std::to_wstring(i);
+        WritePrivateProfileStringW(s.c_str(), L"used", g_profiles[i].used ? L"1" : L"0", path.c_str());
+        WritePrivateProfileStringW(s.c_str(), L"cps", std::to_wstring(g_profiles[i].cps).c_str(), path.c_str());
+        WritePrivateProfileStringW(s.c_str(), L"right", g_profiles[i].right ? L"1" : L"0", path.c_str());
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -198,6 +248,11 @@ private:
     void DrawToggle();
     void DrawPrivacy();
     void RunCleanup();
+    void DrawGear();
+    D2D1_RECT_F ProfileRow(int i) const;
+    D2D1_RECT_F ProfileLoadBtn(int i) const;
+    D2D1_RECT_F ProfileSaveBtn(int i) const;
+    void RegisterToggleHotkey();
 
     void FillRound(const D2D1_RECT_F& r, float radius, D2D1_COLOR_F c);
     void StrokeRound(const D2D1_RECT_F& r, float radius, D2D1_COLOR_F c, float width = 1.f);
@@ -234,6 +289,13 @@ private:
     bool showPrivacy_ = false;
     float privacyAnim_ = 0.f;
     std::wstring cleanupResult_;
+
+    // Panneau reglages / profils / stats
+    bool showGear_ = false;
+    float gearAnim_ = 0.f;
+    int hoverProfile_ = -1;
+    bool capturingHotkey_ = false;  // en attente d'une touche pour le raccourci
+    float maxCps_ = 0.f;            // CPS reel max de la session
 
     // Animation
     LARGE_INTEGER freq_{}, last_{};
@@ -284,7 +346,7 @@ bool App::Create(HINSTANCE instance) {
     const MARGINS shadow{0, 0, 0, 1};
     DwmExtendFrameIntoClientArea(hwnd_, &shadow);
 
-    RegisterHotKey(hwnd_, kHotkeyToggle, MOD_NOREPEAT, VK_F8);
+    RegisterToggleHotkey();
     RegisterHotKey(hwnd_, kHotkeyQuit, MOD_NOREPEAT, VK_F10);
 
     displayCps_ = float(clicker::GetCps());
@@ -439,6 +501,7 @@ void App::Tick() {
 
     displayCps_ = Approach(displayCps_, float(clicker::GetCps()), 14.f, dt);
     measuredCps_ = Approach(measuredCps_, float(inLastSecond), 6.f, dt);
+    maxCps_ = std::max(maxCps_, float(inLastSecond));  // CPS reel max de la session
     enabledAnim_ = Approach(enabledAnim_, clicker::IsEnabled() ? 1.f : 0.f, 12.f, dt);
     holdAnim_ = Approach(holdAnim_, clicker::IsHolding() ? 1.f : 0.f, 18.f, dt);
     focusAnim_ = Approach(focusAnim_, clicker::IsTargetFocused() ? 1.f : 0.f, 8.f, dt);
@@ -451,11 +514,13 @@ void App::Tick() {
     for (size_t i = 0; i < hoverChips_.size(); ++i)
         hoverChips_[i] = Approach(hoverChips_[i], (hover_ == Hit::Chip && hoverChip_ == int(i)) ? 1.f : 0.f, 16.f, dt);
     privacyAnim_ = Approach(privacyAnim_, showPrivacy_ ? 1.f : 0.f, 16.f, dt);
+    gearAnim_ = Approach(gearAnim_, showGear_ ? 1.f : 0.f, 16.f, dt);
 
     // Cadence adaptative : 60 fps quand on interagit ou clique, 30 fps au repos
     // (le fond respire lentement, 30 fps reste fluide) -> CPU/GPU reduits.
-    const bool active = clicker::IsHolding() || dragging_ || showPrivacy_ || hover_ != Hit::None ||
-                        pulse_ > 0.02f || measuredCps_ > 0.05f || (privacyAnim_ > 0.01f && privacyAnim_ < 0.99f);
+    const bool active = clicker::IsHolding() || dragging_ || showPrivacy_ || showGear_ || hover_ != Hit::None ||
+                        pulse_ > 0.02f || measuredCps_ > 0.05f || (privacyAnim_ > 0.01f && privacyAnim_ < 0.99f) ||
+                        (gearAnim_ > 0.01f && gearAnim_ < 0.99f);
     const UINT target = active ? 16u : 33u;
     if (target != curTimerMs_) {
         curTimerMs_ = target;
@@ -480,6 +545,7 @@ void App::Render() {
     DrawChips();
     DrawToggle();
     if (privacyAnim_ > 0.004f) DrawPrivacy();
+    if (gearAnim_ > 0.004f) DrawGear();
 
     if (rt_->EndDraw() == D2DERR_RECREATE_TARGET) DiscardDeviceResources();
 }
@@ -567,6 +633,19 @@ void App::DrawHeader() {
     spectrumBrush_->SetOpacity(1.f);
     Text(L"GAUCHE", fmtLabel_.Get(), cellL, right ? WithAlpha(kMuted, 0.8f) : Rgb(10, 10, 18));
     Text(L"DROIT", fmtLabel_.Get(), cellR, right ? Rgb(10, 10, 18) : WithAlpha(kMuted, 0.8f));
+
+    // Bouton engrenage (reglages / profils).
+    const float gearHover = (hover_ == Hit::Gear) ? 1.f : 0.f;
+    FillRound(kGearBtn, 8.f, WithAlpha(kText, 0.08f * gearHover + 0.06f * gearAnim_));
+    const D2D1_COLOR_F gearCol = Mix(kMuted, kText, std::max(gearHover, gearAnim_));
+    const float gx = (kGearBtn.left + kGearBtn.right) / 2.f, gy = (kGearBtn.top + kGearBtn.bottom) / 2.f;
+    brush_->SetColor(gearCol);
+    for (int i = 0; i < 6; ++i) {
+        const float ang = kPi * i / 3.f + float(time_) * 0.4f;
+        rt_->DrawLine({gx + 4.f * std::cos(ang), gy + 4.f * std::sin(ang)},
+                      {gx + 7.5f * std::cos(ang), gy + 7.5f * std::sin(ang)}, brush_.Get(), 1.8f);
+    }
+    rt_->DrawEllipse(D2D1::Ellipse({gx, gy}, 3.2f, 3.2f), brush_.Get(), 1.5f);
 
     // Boutons fenetre.
     FillRound(kMinBtn, 8.f, WithAlpha(kText, 0.08f * hoverMin_));
@@ -788,8 +867,17 @@ void App::DrawToggle() {
 
     Text(L"AUTOCLICK", fmtCard_.Get(), {r.left + 18.f, r.top + 6.f, r.left + 200.f, r.top + 28.f},
          Mix(kMuted, kText, enabledAnim_));
-    const std::wstring sub = L"F8 basculer  ·  " + FormatThousands(clicker::ClickCount()) + L" clics";
-    Text(sub, fmtSmall_.Get(), {r.left + 18.f, r.top + 26.f, r.right - 90.f, r.top + 46.f}, WithAlpha(kMuted, 0.75f));
+
+    // Pastille du raccourci (cliquable pour redefinir la touche).
+    const bool khov = hover_ == Hit::HotkeyChip;
+    const D2D1_COLOR_F keyCol = capturingHotkey_ ? kAmber : kCyan;
+    FillRound(kHotkeyChip, 6.f, WithAlpha(keyCol, (khov || capturingHotkey_ ? 0.22f : 0.12f)));
+    StrokeRound(kHotkeyChip, 6.f, WithAlpha(keyCol, 0.5f));
+    Text(capturingHotkey_ ? L"…" : KeyName(g_toggleVk), fmtSmall_.Get(), kHotkeyChip, WithAlpha(kText, 0.95f));
+    const std::wstring sub = capturingHotkey_ ? L"appuie sur une touche"
+                                              : L"basculer  ·  " + FormatThousands(clicker::ClickCount()) + L" clics";
+    Text(sub, fmtSmall_.Get(), {kHotkeyChip.right + 8.f, r.top + 26.f, r.right - 90.f, r.top + 46.f},
+         WithAlpha(kMuted, 0.75f));
 
     // Interrupteur anime.
     const float sw = 56.f, sh = 30.f;
@@ -943,6 +1031,107 @@ void App::RunCleanup() {
     }
 }
 
+void App::RegisterToggleHotkey() {
+    UnregisterHotKey(hwnd_, kHotkeyToggle);
+    if (!RegisterHotKey(hwnd_, kHotkeyToggle, MOD_NOREPEAT, UINT(g_toggleVk))) {
+        // Touche indisponible (deja prise) : on revient a F8 par defaut.
+        g_toggleVk = VK_F8;
+        RegisterHotKey(hwnd_, kHotkeyToggle, MOD_NOREPEAT, VK_F8);
+    }
+}
+
+D2D1_RECT_F App::ProfileRow(int i) const {
+    const float top = 230.f + i * 56.f;
+    return {kPrivPanel.left + 14.f, top, kPrivPanel.right - 14.f, top + 48.f};
+}
+D2D1_RECT_F App::ProfileSaveBtn(int i) const {
+    const D2D1_RECT_F r = ProfileRow(i);
+    return {r.right - 78.f, r.top + 9.f, r.right - 10.f, r.bottom - 9.f};
+}
+D2D1_RECT_F App::ProfileLoadBtn(int i) const {
+    const D2D1_RECT_F s = ProfileSaveBtn(i);
+    return {s.left - 74.f, s.top, s.left - 6.f, s.bottom};
+}
+
+// Panneau reglages : statistiques de session et profils.
+void App::DrawGear() {
+    const float a = gearAnim_;
+    brush_->SetColor(Rgb(4, 4, 8, 0.72f * a));
+    rt_->FillRectangle({0, 0, kW, kH}, brush_.Get());
+
+    const D2D1_RECT_F& p = kPrivPanel;
+    FillRound(p, 16.f, WithAlpha(Rgb(16, 15, 26), a));
+    StrokeRound(p, 16.f, WithAlpha(kCyan, 0.3f * a));
+
+    Text(L"RÉGLAGES & PROFILS", fmtCard_.Get(), {p.left + 20, 78, p.right - 20, 102}, WithAlpha(kText, a));
+
+    // --- Statistiques de session ---
+    Text(L"STATISTIQUES DE SESSION", fmtSmall_.Get(), {p.left + 20, 112, p.right - 20, 130},
+         WithAlpha(kCyan, 0.85f * a));
+    const D2D1_RECT_F stats = {p.left + 14, 132, p.right - 14, 198};
+    FillRound(stats, 10.f, WithAlpha(Rgb(8, 8, 14), a));
+    StrokeRound(stats, 10.f, WithAlpha(kText, 0.06f * a));
+
+    const int secs = int(time_);
+    wchar_t dur[16];
+    swprintf_s(dur, L"%d:%02d", secs / 60, secs % 60);
+    const float third = (stats.right - stats.left) / 3.f;
+    auto stat = [&](int col, const std::wstring& value, const std::wstring& label, D2D1_COLOR_F col2) {
+        const D2D1_RECT_F cell = {stats.left + third * col, stats.top, stats.left + third * (col + 1), stats.bottom};
+        Text(value, fmtCard_.Get(), {cell.left, cell.top + 12, cell.right, cell.top + 36}, WithAlpha(col2, a));
+        Text(label, fmtLabel_.Get(), {cell.left, cell.bottom - 24, cell.right, cell.bottom - 8}, WithAlpha(kMuted, a));
+    };
+    stat(0, dur, L"DURÉE", kText);
+    stat(1, FormatThousands(clicker::ClickCount()), L"CLICS", kViolet);
+    wchar_t mx[16];
+    swprintf_s(mx, L"%.1f", maxCps_);
+    stat(2, mx, L"CPS MAX", kCyan);
+
+    // --- Profils ---
+    Text(L"PROFILS", fmtSmall_.Get(), {p.left + 20, 208, p.right - 20, 226}, WithAlpha(kCyan, 0.85f * a));
+    const int curCps = clicker::GetCps();
+    const bool curRight = clicker::UsesRightButton();
+    for (int i = 0; i < kProfileCount; ++i) {
+        const D2D1_RECT_F row = ProfileRow(i);
+        const bool rowHov = hover_ == Hit::ProfLoad && hoverProfile_ == i;
+        FillRound(row, 10.f, WithAlpha(kText, (rowHov ? 0.06f : 0.03f) * a));
+        StrokeRound(row, 10.f, WithAlpha(kText, 0.06f * a));
+
+        const std::wstring name = L"Profil " + std::to_wstring(i + 1);
+        Text(name, fmtCard_.Get(), {row.left + 14, row.top + 6, row.left + 120, row.top + 26}, WithAlpha(kText, a));
+        std::wstring desc = g_profiles[i].used
+                                ? std::to_wstring(g_profiles[i].cps) + L" CPS · " +
+                                      (g_profiles[i].right ? L"Droit" : L"Gauche")
+                                : L"vide";
+        Text(desc, fmtSmall_.Get(), {row.left + 14, row.top + 24, row.left + 160, row.bottom - 4},
+             WithAlpha(kMuted, a));
+
+        // Bouton Charger (actif seulement si le profil est rempli).
+        const D2D1_RECT_F lb = ProfileLoadBtn(i);
+        const bool lhov = hover_ == Hit::ProfLoad && hoverProfile_ == i;
+        const float lAlpha = g_profiles[i].used ? 1.f : 0.3f;
+        FillRound(lb, 9.f, WithAlpha(kCyan, (lhov ? 0.25f : 0.12f) * lAlpha * a));
+        StrokeRound(lb, 9.f, WithAlpha(kCyan, 0.5f * lAlpha * a));
+        Text(L"Charger", fmtSmall_.Get(), lb, WithAlpha(Mix(kMuted, kText, lhov ? 1.f : 0.5f), lAlpha * a));
+
+        // Bouton Enregistrer (memorise la config courante).
+        const D2D1_RECT_F sb = ProfileSaveBtn(i);
+        const bool shov = hover_ == Hit::ProfSave && hoverProfile_ == i;
+        const bool isCur = g_profiles[i].used && g_profiles[i].cps == curCps && g_profiles[i].right == curRight;
+        FillRound(sb, 9.f, WithAlpha(kViolet, (shov ? 0.3f : 0.15f) * a));
+        StrokeRound(sb, 9.f, WithAlpha(kViolet, (isCur ? 0.9f : 0.5f) * a));
+        Text(isCur ? L"Actif" : L"Enreg.", fmtSmall_.Get(), sb, WithAlpha(Mix(kMuted, kText, shov ? 1.f : 0.6f), a));
+    }
+
+    Text(L"« Enreg. » mémorise le CPS et le bouton actuels.", fmtSmall_.Get(),
+         {p.left + 20, 408, p.right - 20, 428}, WithAlpha(kMuted, 0.6f * a));
+
+    const bool bhov = hover_ == Hit::GearBack;
+    FillRound(kPrivBackBtn, 11.f, WithAlpha(kText, (bhov ? 0.09f : 0.04f) * a));
+    StrokeRound(kPrivBackBtn, 11.f, WithAlpha(kText, 0.1f * a));
+    Text(L"Fermer", fmtChip_.Get(), kPrivBackBtn, WithAlpha(Mix(kMuted, kText, bhov ? 1.f : 0.6f), a));
+}
+
 // ---------------------------------------------------------------------------
 // Interaction
 // ---------------------------------------------------------------------------
@@ -958,10 +1147,24 @@ Hit App::HitTest(float x, float y, int* chip) const {
         if (InRect(kMinBtn, x, y)) return Hit::Minimize;
         return Hit::None;
     }
+    // Idem pour le panneau reglages / profils.
+    if (showGear_) {
+        for (int i = 0; i < kProfileCount; ++i) {
+            if (InRect(ProfileLoadBtn(i), x, y)) { if (chip) *chip = i; return Hit::ProfLoad; }
+            if (InRect(ProfileSaveBtn(i), x, y)) { if (chip) *chip = i; return Hit::ProfSave; }
+        }
+        if (InRect(kPrivBackBtn, x, y)) return Hit::GearBack;
+        if (InRect(kGearBtn, x, y)) return Hit::Gear;
+        if (InRect(kCloseBtn, x, y)) return Hit::Close;
+        if (InRect(kMinBtn, x, y)) return Hit::Minimize;
+        return Hit::None;
+    }
     if (InRect(kCloseBtn, x, y)) return Hit::Close;
     if (InRect(kMinBtn, x, y)) return Hit::Minimize;
     if (InRect(kShieldBtn, x, y)) return Hit::Shield;
+    if (InRect(kGearBtn, x, y)) return Hit::Gear;
     if (InRect(kBtnSeg, x, y)) return x < (kBtnSeg.left + kBtnSeg.right) / 2.f ? Hit::BtnLeft : Hit::BtnRight;
+    if (InRect(kHotkeyChip, x, y)) return Hit::HotkeyChip;
     if (InRect(kToggleCard, x, y)) return Hit::Toggle;
     for (int i = 0; i < int(kPresets.size()); ++i) {
         if (InRect(ChipRect(i), x, y)) {
@@ -1051,7 +1254,11 @@ LRESULT App::Handle(UINT msg, WPARAM wParam, LPARAM lParam) {
             SetCpsFromPoint(x, y);
         } else {
             hoverChip_ = -1;
-            hover_ = HitTest(x, y, &hoverChip_);
+            hoverProfile_ = -1;
+            int idx = -1;
+            hover_ = HitTest(x, y, &idx);
+            if (hover_ == Hit::Chip) hoverChip_ = idx;
+            else if (hover_ == Hit::ProfLoad || hover_ == Hit::ProfSave) hoverProfile_ = idx;
         }
         SetCursor(LoadCursorW(nullptr, (hover_ == Hit::None) ? IDC_ARROW : IDC_HAND));
         return 0;
@@ -1077,11 +1284,16 @@ LRESULT App::Handle(UINT msg, WPARAM wParam, LPARAM lParam) {
         case Hit::Minimize: ShowWindow(hwnd_, SW_MINIMIZE); break;
         case Hit::Shield:
             showPrivacy_ = !showPrivacy_;
-            if (showPrivacy_) cleanupResult_.clear();
+            if (showPrivacy_) { cleanupResult_.clear(); showGear_ = false; }
+            break;
+        case Hit::Gear:
+            showGear_ = !showGear_;
+            if (showGear_) showPrivacy_ = false;
             break;
         case Hit::BtnLeft: clicker::SetRightButton(false); SaveSettings(); break;
         case Hit::BtnRight: clicker::SetRightButton(true); SaveSettings(); break;
         case Hit::Toggle: ToggleEnabled(); break;
+        case Hit::HotkeyChip: capturingHotkey_ = true; SetFocus(hwnd_); break;
         case Hit::Chip: clicker::SetCps(kPresets[size_t(chip)]); SaveSettings(); break;
         case Hit::Dial:
             dragging_ = true;
@@ -1092,6 +1304,20 @@ LRESULT App::Handle(UINT msg, WPARAM wParam, LPARAM lParam) {
         case Hit::PrivSecure: g_secureWipe = !g_secureWipe; SaveSettings(); break;
         case Hit::PrivClean: RunCleanup(); break;
         case Hit::PrivBack: showPrivacy_ = false; break;
+        case Hit::GearBack: showGear_ = false; break;
+        case Hit::ProfLoad:
+            if (chip >= 0 && g_profiles[chip].used) {
+                clicker::SetCps(g_profiles[chip].cps);
+                clicker::SetRightButton(g_profiles[chip].right);
+                SaveSettings();
+            }
+            break;
+        case Hit::ProfSave:
+            if (chip >= 0) {
+                g_profiles[chip] = {true, clicker::GetCps(), clicker::UsesRightButton()};
+                SaveSettings();
+            }
+            break;
         case Hit::None: break;
         }
         return 0;
@@ -1106,18 +1332,29 @@ LRESULT App::Handle(UINT msg, WPARAM wParam, LPARAM lParam) {
         return 0;
 
     case WM_MOUSEWHEEL:
-        if (showPrivacy_) return 0;  // le cadran est masque par le panneau
+        if (showPrivacy_ || showGear_) return 0;  // le cadran est masque par un panneau
         clicker::SetCps(clicker::GetCps() + (GET_WHEEL_DELTA_WPARAM(wParam) > 0 ? 1 : -1));
         SaveSettings();
         return 0;
 
     case WM_KEYDOWN:
+        // Capture d'une nouvelle touche de raccourci.
+        if (capturingHotkey_) {
+            if (wParam != VK_ESCAPE) {
+                g_toggleVk = int(wParam);
+                RegisterToggleHotkey();
+                SaveSettings();
+            }
+            capturingHotkey_ = false;
+            return 0;
+        }
         if (wParam == VK_ESCAPE) {
             if (showPrivacy_) showPrivacy_ = false;  // referme le panneau d'abord
+            else if (showGear_) showGear_ = false;
             else PostMessageW(hwnd_, WM_CLOSE, 0, 0);
             return 0;
         }
-        if (showPrivacy_) break;  // pas de reglage CPS tant que le panneau est ouvert
+        if (showPrivacy_ || showGear_) break;  // pas de reglage CPS tant qu'un panneau est ouvert
         if (wParam == VK_RIGHT || wParam == VK_UP) clicker::SetCps(clicker::GetCps() + 1);
         else if (wParam == VK_LEFT || wParam == VK_DOWN) clicker::SetCps(clicker::GetCps() - 1);
         else if (wParam == VK_SPACE) ToggleEnabled();
